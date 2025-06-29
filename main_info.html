@@ -1,0 +1,208 @@
+{% extends "user_home.html" %}
+
+{% block content %}
+<div class="row">
+    <!-- 视频监控区 -->
+    <div class="col-md-8">
+        <div class="card dashboard-card">
+            <div class="card-header">
+                实时监控
+                <button class="btn btn-sm btn-primary float-end" onclick="toggleFullscreen()">
+                    全屏
+                </button>
+            </div>
+            <div class="card-body p-0">
+                <div id="videoContainer" class="ratio ratio-16x9">
+                    <video id="liveVideo" controls class="w-100">
+                        <source src="/static/sample.mp4" type="video/mp4">
+                    </video>
+                </div>
+                <div class="p-3">
+                    <div class="btn-group">
+                        <button class="btn btn-outline-primary" onclick="controlDevice('light')">
+                            <i class="bi bi-lightbulb"></i> 灯光
+                        </button>
+                        <button class="btn btn-outline-primary" onclick="controlDevice('cleaner')">
+                            <i class="bi bi-brush"></i> 清洁
+                        </button>
+                        <input type="datetime-local" class="form-control" id="playbackTime">
+                        <button class="btn btn-outline-primary" onclick="playback()">
+                            <i class="bi bi-play-circle"></i> 回放
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 水文数据 -->
+    <div class="col-md-4">
+        <div class="card dashboard-card">
+            <div class="card-header">实时水文数据</div>
+            <div class="card-body">
+                <div id="hydrologyGauges" style="height: 400px;"></div>
+                <div class="alert alert-danger" id="alertsPanel" style="display: none;">
+                    <i class="bi bi-exclamation-triangle"></i>
+                    <span id="alertMessage"></span>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="alert alert-info">
+    数据更新时间：<span id="updateTime">{{ update_time }}</span>
+    <button class="btn btn-sm btn-outline-secondary float-end"
+            onclick="refreshHydrology()">
+        刷新数据
+    </button>
+</div>
+</div>
+
+<!-- 地图定位 -->
+<div class="row mt-4">
+    <div class="col-md-12">
+        <div class="card dashboard-card">
+            <div class="card-header">
+                设备定位
+                <div class="float-end">
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" 
+                               id="realTimeUpdate" checked>
+                        <label class="form-check-label" for="realTimeUpdate">实时更新</label>
+                    </div>
+                </div>
+            </div>
+            <div class="card-body">
+                <div id="mapContainer" style="height: 500px;"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 历史数据 -->
+<div class="row mt-4">
+    <div class="col-md-12">
+        <div class="card dashboard-card">
+            <div class="card-header">
+                历史数据查询
+                <div class="float-end">
+                    <select class="form-select" id="dataType">
+                        <option value="temp">水温</option>
+                        <option value="salinity">盐度</option>
+                        <option value="do">溶解氧</option>
+                    </select>
+                </div>
+            </div>
+            <div class="card-body">
+                <div id="historyChart" style="height: 300px;"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+<script>
+// 初始化地图
+const map = L.map('mapContainer').setView([36.07, 120.38], 13);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+// 添加设备标记
+{% for camera in cameras %}
+const marker = L.marker({{ camera.position }})
+  .bindPopup(`
+    <b>摄像头 {{ camera.id }}</b><br>
+    状态: <span class="badge ${camera.status === 'online' ? 'bg-success' : 'bg-danger'}">
+        {{ camera.status }}
+    </span>
+  `)
+  .addTo(map);
+{% endfor %}
+
+// 水文仪表盘
+const hydrologyChart = echarts.init(document.getElementById('hydrologyGauges'));
+hydrologyChart.setOption({
+    grid: { containLabel: true },
+    series: [
+        {
+            type: 'gauge',
+            center: ['20%', '55%'],
+            radius: '80%',
+            axisLine: { lineStyle: { width: 10 } },
+            detail: { formatter: '{value}V' },
+            data: [{ value: {{ hydrology.voltage }} }]
+        },
+        // 其他传感器类似配置
+    ]
+});
+
+// 修改水文数据获取
+function updateHydrology() {
+    fetch('/api/hydrology')
+        .then(response => response.json())
+        .then(data => {
+            document.getElementById('updateTime').textContent = data.update_time;
+            // 更新仪表盘数据
+            hydrologyChart.setOption({
+                series: [{
+                    data: [{ value: data.voltage }]
+                },{
+                    data: [{ value: data.temperature }]
+                },{
+                    data: [{ value: data.salinity }]
+                },{
+                    data: [{ value: data.do }]
+                }]
+            });
+        });
+}
+
+// 每5分钟自动更新
+setInterval(updateHydrology, 300000);
+
+// 设备控制
+function controlDevice(action) {
+    fetch('/api/control', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            device_id: 'CAM_001',
+            action: action
+        })
+    }).then(updateDeviceStatus);
+}
+
+// 历史数据查询
+function loadHistory() {
+    const params = {
+        type: document.getElementById('dataType').value,
+        start: document.getElementById('startDate').value,
+        end: document.getElementById('endDate').value
+    };
+    
+    fetch('/api/history', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params)
+    }).then(response => response.json())
+      .then(data => {
+          historyChart.setOption({
+              xAxis: { data: data.dates },
+              series: [{ data: data.values }]
+          });
+      });
+}
+
+// 异常告警检查
+setInterval(() => {
+    fetch('/api/device_status')
+        .then(response => response.json())
+        .then(data => {
+            if(data.alarms.length > 0) {
+                document.getElementById('alertsPanel').style.display = 'block';
+                document.getElementById('alertMessage').innerHTML = 
+                    `异常设备：${data.alarms[0].device} ${data.alarms[0].type}异常`;
+            }
+        });
+}, 5000);
+</script>
+{% endblock %}

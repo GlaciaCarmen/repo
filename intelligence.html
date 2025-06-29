@@ -1,0 +1,246 @@
+{% extends "user_home.html" %}
+
+{% block content %}
+<div class="row">
+    <!-- 环境评分 -->
+    <div class="col-md-4">
+        <div class="card dashboard-card">
+            <div class="card-header">环境健康度</div>
+            <div class="card-body">
+                <div id="envScore" style="height: 200px;"></div>
+                <table class="table table-sm">
+                    <tr><th>水温</th><td>{{ env_data.temp }}℃</td></tr>
+                    <tr><th>盐度</th><td>{{ env_data.salinity }}‰</td></tr>
+                    <tr><th>溶解氧</th><td>{{ env_data.do }}mg/L</td></tr>
+                    <tr><th>PH值</th><td>{{ env_data.ph }}</td></tr>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- 双目摄像头 -->
+    <div class="col-md-8">
+        <div class="card dashboard-card">
+            <div class="card-header">
+                立体视觉监控
+                <div class="float-end">
+                    <button class="btn btn-sm btn-primary" onclick="captureFrame()">
+                        <i class="bi bi-camera"></i> 截图
+                    </button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <img id="leftCam" src="{{ url_for('video_feed', camera=0) }}"
+                             class="img-fluid border">
+                    </div>
+                    <div class="col-md-6">
+                        <img id="leftCam" src="{{ url_for('video_feed', camera=0) }}"
+                             class="img-fluid border">
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 鱼类追踪 -->
+<div class="row mt-4">
+    <div class="col-md-8">
+        <div class="card dashboard-card">
+            <div class="card-header">实时鱼群分析</div>
+            <div class="card-body">
+                <div id="trackingView" style="height: 500px;"></div>
+                <table class="table table-hover mt-3" id="fishTable">
+                    <thead>
+                        <tr>
+                            <th>编号</th>
+                            <th>鱼种</th>
+                            <th>体长(cm)</th>
+                            <th>体重(kg)</th>
+                            <th>健康状态</th>
+                            <th>轨迹</th>
+                        </tr>
+                    </thead>
+                    <tbody id="fishData">
+                        <!-- WebSocket动态填充 -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- 轨迹分析 -->
+    <div class="col-md-4">
+        <div class="card dashboard-card">
+            <div class="card-header">轨迹分析</div>
+            <div class="card-body">
+                <div id="trajectoryChart" style="height: 300px;"></div>
+                <div id="analysisResult" class="mt-3">
+                    <h6>行为分析：</h6>
+                    <p id="behaviorText">正常巡游</p>
+                    <h6>异常检测：</h6>
+                    <p id="abnormalText" class="text-success">无异常</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 水质分析模块 -->
+<div class="row mt-4">
+    <div class="col-md-12">
+        <div class="card dashboard-card">
+            <div class="card-header">
+                水质参数分析
+                <div class="float-end">
+                    <select class="form-select" id="monitoringSite" style="width: 150px;">
+                        {% for site in monitoring_sites %}
+                        <option value="{{ site }}">{{ site }}</option>
+                        {% endfor %}
+                    </select>
+                    <select class="form-select" id="waterParameter" style="width: 150px;">
+                        {% for param in water_parameters %}
+                        <option value="{{ param }}">{{ param }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+            <div class="card-body">
+                <div id="waterQuality" style="height: 400px;"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// 水质分析图表
+const waterChart = echarts.init(document.getElementById('waterQuality'));
+
+function updateWaterChart() {
+    const site = document.getElementById('monitoringSite').value;
+    const param = document.getElementById('waterParameter').value;
+
+    fetch(`/api/water_quality?site=${site}&param=${param}`)
+        .then(response => response.json())
+        .then(data => {
+            const isGeoSource = data.source_type === '地理目录';
+
+            const option = {
+                title: {
+                    text: `${site} ${param}变化趋势`,
+                    subtext: `数据来源：${isGeoSource ? '地理监测点' : '时间序列监测'}`
+                },
+                tooltip: {
+                    formatter: params =>
+                        `${params.seriesName}<br>
+                        时间：${params.name}<br>
+                        值：${params.value}${isGeoSource ? ' (地理数据)' : ''}`
+                },
+                xAxis: {
+                    type: 'category',
+                    data: data.time,
+                    name: '日期'
+                },
+                yAxis: { type: 'value', name: param },
+                series: [{
+                    type: 'line',
+                    data: data.values,
+                    smooth: true,
+                    areaStyle: { opacity: 0.4 }
+                }]
+            };
+            waterChart.setOption(option);
+        });
+}
+
+// 初始化图表
+updateWaterChart();
+
+// 事件监听
+document.getElementById('monitoringSite').addEventListener('change', updateWaterChart);
+document.getElementById('waterParameter').addEventListener('change', updateWaterChart);
+</script>
+
+<script src="https://cdn.socket.io/4.5.0/socket.io.min.js"></script>
+<script>
+// 初始化WebSocket
+const socket = io.connect('http://' + document.domain + ':' + location.port);
+
+// 环境评分仪表盘
+const envChart = echarts.init(document.getElementById('envScore'));
+envChart.setOption({
+    series: [{
+        type: 'gauge',
+        axisLine: { lineStyle: { color: [[0.3, '#67e0e3'], [0.7, '#37a2da'], [1, '#fd666d']], width: 20 }},
+        detail: { formatter: '{value}分', fontSize: 18 },
+        data: [{ value: {{ env_score }} }]
+    }]
+});
+
+// 鱼类数据实时更新
+socket.on('fish_update', function(msg) {
+    const tbody = document.getElementById('fishData');
+    tbody.innerHTML = msg.data.map(fish => `
+        <tr class="${fish.healthy ? '' : 'table-warning'}">
+            <td>${fish.id}</td>
+            <td>${fish.species}</td>
+            <td>${fish.length}</td>
+            <td>${fish.weight}</td>
+            <td>${fish.healthy ? '健康' : '异常'}</td>
+            <td><button class="btn btn-sm btn-outline-primary"
+               onclick="showTrajectory('${fish.id}')">查看</button></td>
+        </tr>
+    `).join('');
+});
+
+// 轨迹可视化
+const trajectoryChart = echarts.init(document.getElementById('trajectoryChart'));
+function updateTrajectory(data) {
+    trajectoryChart.setOption({
+        xAxis: { type: 'value' },
+        yAxis: { type: 'value' },
+        series: [{
+            type: 'line',
+            data: data.points,
+            symbolSize: 10,
+            itemStyle: { color: data.color }
+        }]
+    });
+}
+
+/ 添加异常数据标注
+function detect_anomalies(data) {
+    const warnings = [];
+    if (data['pH(无量纲)'].max() > 8.5 || data['pH(无量纲)'].min() < 6.5) {
+        warnings.push("pH值异常");
+    }
+    if (data['溶解氧(mg/L)'].min() < 2) {
+        warnings.push("溶解氧过低");
+    }
+    return warnings;
+}
+
+// 在图表中显示警告
+function show_warnings(warnings) {
+    const warningPanel = document.getElementById('waterWarnings');
+    warningPanel.innerHTML = warnings.map(w => `
+        <div class="alert alert-warning">${w}</div>
+    `).join('');
+}
+
+// 截图功能
+function captureFrame() {
+    const canvas = document.createElement('canvas');
+    const video = document.getElementById('leftCam');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext('2d').drawImage(video, 0, 0);
+    const link = document.createElement('a');
+    link.download = `capture_${Date.now()}.png`;
+    link.href = canvas.toDataURL();
+    link.click();
+}
+</script>
+{% endblock %}
